@@ -1,0 +1,23 @@
+{
+  "name": "yolo-and-face",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "fetch-assets": "node scripts/fetch-assets.mjs",
+    "deploy:pages": "node scripts/deploy-pages.mjs",
+    "serve:dist": "python3 -m http.server 8899 --directory dist"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "onnxruntime-web": "^1.29.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

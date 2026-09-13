@@ -1,0 +1,15 @@
+node_modules/
+dist/
+tmp/
+.playwright-cli/
+*.log
+
+# 模型与 WASM 运行时（约 116MB）不入库：
+#   - 主分支只留源码，clone 下来很轻；
+#   - 用 `pnpm fetch-assets` 按 scripts/fetch-assets.mjs 的清单拉回来，幂等；
+#   - gh-pages 分支上的 dist/ 仍然带全部模型，所以 Pages 部署和离线分发不受影响。
+public/models/
+public/wasm/
+
+# 部署脚本临时挂载的 gh-pages worktree
+.deploy-gh-pages/

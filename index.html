@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>浏览器端实时 CV 推理可视化</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <h1>实时 CV 推理可视化</h1>
+        <div class="topbar-meta">
+          <span class="chip" id="backend-chip" title="推理后端">后端 —</span>
+          <span class="chip" id="source-chip" title="当前帧源">源 未启动</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="stage">
+          <div class="viewport" id="viewport">
+            <video id="video" playsinline autoplay muted></video>
+            <img id="still" alt="" hidden />
+            <canvas id="overlay"></canvas>
+            <div class="placeholder" id="placeholder">
+              <p>选择「摄像头」或加载一张图片开始</p>
+            </div>
+          </div>
+
+          <div class="stage-bar">
+            <div class="group" role="group" aria-label="帧源">
+              <button id="btn-camera" type="button" class="seg active">摄像头</button>
+              <button id="btn-image" type="button" class="seg">图片</button>
+            </div>
+
+            <label class="field" id="camera-field">
+              <span>设备</span>
+              <select id="camera-select"><option value="">默认摄像头</option></select>
+            </label>
+
+            <input id="file-input" type="file" accept="image/*" hidden />
+            <button id="btn-start" type="button" class="primary">启动</button>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <div class="panel-block">
+            <h2>算法</h2>
+            <div id="task-list" class="task-list"></div>
+          </div>
+
+          <div class="panel-block">
+            <h2>人脸库</h2>
+            <div class="face-add">
+              <input id="face-name" type="text" placeholder="姓名（可留空）" maxlength="24" />
+              <button id="btn-face-add" type="button" class="mini">注册当前人脸</button>
+            </div>
+            <div id="face-note" class="face-note">开启「人脸识别 1:N」后可注册</div>
+            <div id="face-list" class="face-list"></div>
+            <button id="btn-face-clear" type="button" class="ghost" hidden>清空人脸库</button>
+          </div>
+
+          <div class="panel-block">
+            <h2>性能</h2>
+            <div id="stats" class="stats"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>
