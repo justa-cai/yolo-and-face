@@ -29,6 +29,12 @@ export const dom = {
   faceNote: need<HTMLDivElement>('#face-note'),
   faceList: need<HTMLDivElement>('#face-list'),
 
+  palmName: need<HTMLInputElement>('#palm-name'),
+  btnPalmAdd: need<HTMLButtonElement>('#btn-palm-add'),
+  btnPalmClear: need<HTMLButtonElement>('#btn-palm-clear'),
+  palmNote: need<HTMLDivElement>('#palm-note'),
+  palmList: need<HTMLDivElement>('#palm-list'),
+
   backendChip: need<HTMLSpanElement>('#backend-chip'),
   sourceChip: need<HTMLSpanElement>('#source-chip'),
 }

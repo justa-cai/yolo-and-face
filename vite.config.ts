@@ -46,6 +46,12 @@ export default defineConfig({
     host: true,
     port: 5173,
     headers: crossOriginIsolationHeaders,
+    watch: {
+      // tmp/ 下都是临时产物：调参脚本、标定数据、下载缓存，还有按规范放在这里的
+      // Python 虚拟环境（好几个 G、几万个文件）。不挡住的话 vite 会去 watch 它们，
+      // 光是 pip 装包就能触发几万次 page reload 把 dev server 拖死。
+      ignored: ['**/tmp/**'],
+    },
   },
   plugins: [dropBundledOrtWasm()],
   build: {

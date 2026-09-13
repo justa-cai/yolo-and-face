@@ -237,6 +237,28 @@ export class Overlay {
     ctx.globalAlpha = 1
   }
 
+  /**
+   * 闭合多边形。用于画 ROI 区域这类有内外之分的边界——`polyline` 会漏掉
+   * 「最后一点回到第一点」那条边，看起来就像缺了个口。
+   */
+  polygon(pts: readonly Pt[], style: StrokeStyle = {}): void {
+    if (pts.length < 3) return
+    const ctx = this.ctx
+    this.applyStroke(ctx, style)
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    pts.forEach((p, i) => {
+      const cx = this.mapX(p.x)
+      const cy = this.mapY(p.y)
+      if (i === 0) ctx.moveTo(cx, cy)
+      else ctx.lineTo(cx, cy)
+    })
+    ctx.closePath()
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+
   /** 骨骼连线。connections 是 [起点下标, 终点下标] 的列表。 */
   skeleton(
     pts: readonly Pt[],

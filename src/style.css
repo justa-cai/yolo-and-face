@@ -257,6 +257,21 @@ button.primary:disabled {
   color: var(--muted);
 }
 
+/* 标题里的小标记，用来提示「这个功能是实验性的，别当真」 */
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #ffd166;
+  background: rgba(255, 209, 102, 0.14);
+  border: 1px solid rgba(255, 209, 102, 0.35);
+}
+
 .task-list {
   display: flex;
   flex-direction: column;

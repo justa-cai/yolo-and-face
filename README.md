@@ -1,7 +1,7 @@
 # 浏览器端实时 CV 推理与可视化
 
 纯前端的计算机视觉演示站：打开网页，用**摄像头**或**本地图片**作为输入，实时跑
-人脸 / 骨骼点 / 物体三类算法，并把结果叠加画在画面上。
+人脸 / 骨骼点 / 物体 / 手部四类算法，并把结果叠加画在画面上。
 
 **所有推理都在浏览器里完成，没有任何后端**。模型和 WASM 运行时全部自托管，
 首次加载后可以完全断网运行。
@@ -20,6 +20,8 @@
 | 物体检测 | EfficientDet-Lite0 | COCO 80 类，框 + 类别 + 置信度 |
 | 图像分类 | EfficientNet-Lite0 | ImageNet 1000 类，整帧 Top-N 排行榜 |
 | 人脸识别 1:N | SFace (ONNX) | 128 维特征 + 余弦匹配，可注册多张人脸 |
+| 手部关键点 | MediaPipe HandLandmarker | 21 个 3D 关键点，双手 |
+| 掌纹识别 1:N ⚠️ | DINOv2-S / MobileNetV3-S (ONNX) | 掌纹库 + 余弦匹配，两种骨干可切。**实验性**，见下文 |
 | 坐标标定 | 无模型 | 归一化网格 + 正圆，用来核对叠加层坐标映射 |
 
 每个任务独立开关，勾选后才去下载它自己的模型（懒加载）。参数（阈值、Top-N、点径……）
@@ -31,7 +33,7 @@
 git clone git@github.com:justa-cai/yolo-and-face.git
 cd yolo-and-face
 pnpm install
-pnpm fetch-assets     # 把模型与 WASM 运行时拉到 public/（约 116MB，只需一次）
+pnpm fetch-assets     # 把模型与 WASM 运行时拉到 public/（约 164MB，只需一次）
 pnpm dev              # http://127.0.0.1:5173
 ```
 
@@ -50,7 +52,7 @@ pnpm fetch-assets --with-webgpu # 额外拷 ORT 的 WebGPU(jsep) 运行时，+28
 ## 离线 / 内网部署
 
 ```bash
-pnpm build            # 产出 dist/，约 128MB
+pnpm build            # 产出 dist/，约 163MB
 ```
 
 `dist/` 是**完全自包含**的，整个目录拷到任何地方、任何静态服务器都能直接打开：
@@ -156,11 +158,59 @@ pnpm deploy:pages --dry-run  # 只构建
 人脸特征存在浏览器 **IndexedDB** 里（明文向量）。这是本地演示用途，**真实身份信息
 请自行评估合规风险**。
 
+## 掌纹识别怎么用（⚠️ 实验性，别当身份认证用）
+
+1. 勾选「掌纹识别 1:N」，UI 会自动带上依赖的「手部关键点」（掌心 ROI 要用它的 21 点）。
+2. 手掌摊开正对镜头，填名字点「注册当前掌纹」。
+3. 之后每只手都会和掌纹库比一遍，命中显示绿色名字 + 相似度，未命中显示灰色
+   `未知 NN.N%`。黄色虚线框是**掌心 ROI**——它框住的那块才是拿去比对的区域。
+
+「判定阈值」默认 `0.79`，「骨干」可切 DINOv2-Small（384 维）或 MobileNetV3-Small
+（1024 维）。**换骨干会换特征空间**，旧库里维度对不上的条目比对时会被跳过，侧栏会
+明确提示「库里有 N 条特征与当前骨干…维度不符」，要按新骨干重新注册。
+
+### 这个功能到底在比什么
+
+**先说结论：它比的是掌心外观，不是掌纹脊线，判别力没有经过任何公开数据集评估。**
+
+- 掌纹领域没有许可证宽松的预训练模型（公开的大多是论文代码 + 受限权重），所以这里
+  用的是**通用视觉骨干 + few-shot 匹配**，没有任何掌纹领域的迁移学习。
+- 就算有合适的模型，**这个摄像头分辨率也不够**：实测这几张照片掌宽约 320 像素，
+  成人掌心横向有 150–200 条脊线，即每条约 2 像素——已经在采样极限上，再压到
+  224×224 更是彻底糊掉。这套特征主要抓的是肤色、手型、掌纹走向和光照。
+- **两个人手掌外观相近时它会误判。** 这一点在 6 个样本上无法评估，别抱幻想。
+
+流程本身（手部 21 点 → 掌心 ROI 归一化 → 骨干抽特征 → 余弦比对）是这类系统的标准
+骨架，换成真正的掌纹模型（要有训练数据）就能直接替换骨干那一步。
+
+### 阈值怎么定的
+
+拿 6 张公开手掌照片实测（脚本 `tmp/palm_calib.py`，可复跑）：
+
+| 骨干 | 同手相似度最低 | 异手最高 | 可用区间 |
+|---|---|---|---|
+| DINOv2-Small | 0.837 | 0.738 | 0.738 – 0.837 |
+| MobileNetV3-Small | 0.867 | 0.703 | 0.703 – 0.867 |
+
+「同手」是把原图旋转 ±8°、缩放 0.9/1.08、亮度 ±8% 后重跑关键点和 ROI 得到的，
+**比真实摄像头的姿态变化温和，实际使用中的漏识会明显比这张表更严重**。
+
+两个数字必须跟着说清楚：
+
+- 「异手最高」**已经把 palm01/palm10 那一对排除掉了**。那两张是同一来源、疑似同一只手，
+  互相能到 0.94/0.92。它们到底是不是同一只手，我判断不了——如果是，0.94 正是同手该有的
+  分数；如果不是，就说明这套特征会误判，而这 6 个样本里再没有第三对这么像的可以用来分辨。
+- `0.79` 落在两个骨干可用区间的交集 (0.738, 0.837) 中间，两边各留约 0.05 余量。
+  它**比典型的安全阈值宽松得多**，默认偏向「宁可误识也不漏识」。要更保守请自己往上调。
+
+掌纹特征同样存在 IndexedDB 里（明文向量，`cv-palm-gallery`），和上文人脸库一样的合规提醒。
+
 ## 模型来源与许可证
 
 对外开源、不商用，所以只选许可证干净的组件。**没有引入 Ultralytics YOLO 全系
 （AGPL-3.0），也没有用 InsightFace 的官方权重（非商用研究许可）**——姿态因此只用
-MediaPipe，人脸识别因此改用 SFace。
+MediaPipe，人脸识别因此改用 SFace，掌纹识别因此用通用骨干（自套）而不是没有公开权重的
+掌纹专用模型。
 
 | 组件 | 版本 | 许可证 | 来源 |
 |---|---|---|---|
@@ -173,6 +223,14 @@ MediaPipe，人脸识别因此改用 SFace。
 | `efficientdet_lite0.tflite` | — | Apache-2.0 | mediapipe-models |
 | `efficientnet_lite0.tflite` | — | Apache-2.0 | mediapipe-models |
 | `face_recognition_sface_2021dec.onnx` | — | Apache-2.0 | opencv_zoo |
+| `hand_landmarker.task` | — | Apache-2.0 | mediapipe-models |
+| `palm_dinov2_small_fp16.onnx` | — | Apache-2.0 | facebook/dinov2-small |
+| `palm_mobilenetv3_features.onnx` | — | Apache-2.0 | timm mobilenetv3_small_100 |
+
+后两个掌纹骨干是**通用图像模型自己转的 ONNX**，不是掌纹专用权重：DINOv2-Small 从
+HuggingFace 官方仓库转出（只做了 fp16 转换，输出 384 维 CLS 特征），MobileNetV3-Small
+是从 timm 权重导出、把分类头换成池化输出（1024 维）并合并了归一化层。转换步骤见
+`scripts/fetch-assets.mjs`。
 
 MediaPipe 的 WASM 运行时随 `tasks-vision` 的 npm 包一起分发，同样是 Apache-2.0。
 
@@ -180,13 +238,14 @@ MediaPipe 的 WASM 运行时随 `tasks-vision` 的 npm 包一起分发，同样�
 
 | 目录 | 体积 | 说明 |
 |---|---|---|
-| `public/models/mediapipe/` | 43 MB | 6 个 `.task` / `.tflite` |
-| `public/models/onnx/` | 37 MB | SFace，最大单文件 |
-| `public/wasm/mediapipe/` | 23 MB | SIMD + nosimd 两套运行时 |
+| `public/models/mediapipe/` | 51 MB | 7 个 `.task` / `.tflite` |
+| `public/models/onnx/` | 87 MB | SFace 37MB + DINOv2 45MB + MobileNetV3 6MB |
+| `public/wasm/mediapipe/` | 12 MB | 默认只拉 SIMD 一套；`--all-wasm` 会额外拉 nosimd / 多线程版 |
 | `public/wasm/ort/` | 14 MB | 纯 WASM 版胶水层 + wasm |
-| `dist/` 合计 | 128 MB | 其中 JS/CSS 只有 684 KB |
+| 合计 | 164 MB | 其中 JS/CSS 只有几百 KB |
 
-懒加载下用户实际只会下载勾选过的任务所需的模型，SFace 那 37MB 只有开人脸识别才会走网络。
+懒加载下用户实际只会下载勾选过的任务所需的模型：SFace 那 37MB 只有开人脸识别才会走网络，
+DINOv2 那 45MB 只有开掌纹识别且选了 DINOv2 骨干才会走网络（选 MobileNetV3 只要 6MB）。
 模型用 **Cache Storage** 持久化（`cv-models-v1`），二次访问不走网络。
 
 ## 换成自己的模型
@@ -205,8 +264,14 @@ draw(overlay: Overlay): void                 // 只画
 
 3. 在 `src/tasks/registry.ts` 里注册。
 
+如果你的任务是「抽特征 + 比对」型的（人脸、掌纹就是），实现的是扩展接口
+`BiometricTask`（多出 `captureEmbedding` / `reloadGallery` / `backendLabel` /
+`backboneLabel` / `galleryWarning`），实现完直接往 `registry.ts` 里加一行，
+UI 的注册/删除/清空侧栏、特征库、余弦匹配全都不用再写一遍。
+
 `ctx.element` 是调度器降采样后的画面（喂模型用），`ctx.source.element` 是原始分辨率；
-`ctx.shared` 用于任务之间传中间结果（人脸识别就是这么拿到关键点的 478 点的）。
+`ctx.shared` 用于任务之间传中间结果（人脸识别就是这么拿到关键点的 478 点的，掌纹识别
+则从 `SHARED_HAND_LANDMARKS` 拿手部 21 点去构造掌心 ROI）。
 
 ## 目录结构
 
@@ -215,11 +280,12 @@ src/
 ├── main.ts              装配入口
 ├── ui/                  layout / controls / stats / gallery
 ├── source/              FrameSource / CameraSource / ImageSource
-├── render/Overlay.ts    坐标映射 + 画框/画点/画骨架/画标签
+├── render/Overlay.ts    坐标映射 + 画框/画点/画骨架/画多边形/画标签
 ├── tasks/               每个算法一个文件 + types.ts / registry.ts
-├── face/                FaceGallery(IndexedDB) / match.ts(余弦匹配)
+├── biometric/           gallery(IndexedDB) / match(余弦匹配)   ← 人脸与掌纹共用
+├── palm/                roi(掌心 ROI 归一化) / backbone(两种骨干)
 ├── runtime/             mediapipe / ort / scheduler / assets
-└── util/                imageOps(对齐) / throttler / storage
+└── util/                imageOps(人脸对齐) / throttler / storage
 ```
 
 ## 已知限制
@@ -228,14 +294,23 @@ src/
   不要用 YOLO-Pose（AGPL）。
 - **人脸识别对镜像脸不敏感**。ArcFace 家族的模型不是镜像不变的，左右翻转后的
   相似度会掉；正脸、换照片、小角度旋转（±15° 实测 96%+）都没问题。
+- **掌纹识别是实验性的**，比人脸那一栏弱得多，具体见上文「掌纹识别怎么用」：
+  比的是掌心外观而非脊线，阈值只在 6 张照片上标定过，且 0.79 偏宽松。
+  **不要拿它当身份认证。**
+- **掌纹 ROI 依赖手部关键点的质量**。手部 21 点本身在快速运动、遮挡、极端角度下会抖，
+  抖了 ROI 就跟着飘，特征自然对不上——这是这套流程最脆的一环。
 - **MediaPipe 的多线程拿不到**（见上文），要么接受单线程，要么把任务搬进 Worker。
-- **`public/models/` 与 `public/wasm/` 没有进版本库**（116MB 二进制会让仓库永久变重）。
+- **`public/models/` 与 `public/wasm/` 没有进版本库**（164MB 二进制会让仓库永久变重）。
   `git clone` 之后必须先跑一次 `pnpm fetch-assets` 才有模型。
   `gh-pages` 分支上的 `dist/` 是带全量模型的，所以 **Pages 部署和离线分发不受影响**。
 - 人脸库是 IndexedDB 里的明文特征向量，仅适合本地演示。
 
 ## 还没做（评估过的）
 
+- **把掌纹识别换成真正的掌纹模型**。这是让这个功能从「演示」变成「能用」的唯一路子：
+  当前用的是通用骨干，比的是掌心外观。但这件事卡在数据上——掌纹领域没有许可证宽松的
+  预训练权重，公开数据集（如 Tongji、CASIA）也基本是研究用途限制，所以要么自己采数据训，
+  要么找到许可干净的权重再做。骨干那一步（`src/palm/backbone.ts`）是留好的替换点。
 - **把推理挪进 Web Worker**。这是唯一能同时解决「MediaPipe 多线程」和「重任务阻塞
   主线程」的路子：Worker 里用 `vision_wasm_module_internal`（就是官方为 Worker 准备的
   ESM 变体），主线程只管 `createImageBitmap(video)` 后 transfer 过去，渲染循环就不会被

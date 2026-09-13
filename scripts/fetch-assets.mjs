@@ -8,16 +8,21 @@
  *   pnpm fetch-assets --force         # 忽略本地已存在，全部重下
  *
  * 幂等：目标文件已存在且字节数与远端一致时跳过。
+ * 例外是掌纹骨干 MobileNetV3——它下载后还要打补丁（见 PATCHED_MOBILENET），
+ * 判定依据换成「打完补丁的字节数」，原始图本身不留档。
  */
 import { mkdir, stat, copyFile, readdir, unlink } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PUBLIC_DIR = path.join(ROOT, 'public')
+/** 中间产物一律落在这里，下载成功后由调用方删掉 */
+const SCRATCH_DIR = path.join(ROOT, 'tmp', 'download')
 
 const argv = new Set(process.argv.slice(2))
 const ALL_WASM = argv.has('--all-wasm')
@@ -26,6 +31,7 @@ const FORCE = argv.has('--force')
 
 const MP = 'https://storage.googleapis.com/mediapipe-models'
 const ZOO = 'https://github.com/opencv/opencv_zoo/raw/main/models'
+const HF = 'https://huggingface.co'
 
 /** 远端模型 -> public/ 下的相对路径 */
 const MODELS = [
@@ -42,6 +48,9 @@ const MODELS = [
    'models/mediapipe/efficientdet_lite0.tflite'],
   ['image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite',
    'models/mediapipe/efficientnet_lite0.tflite'],
+  // 手部 21 点，掌纹识别的前置（Apache-2.0）
+  ['hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+   'models/mediapipe/hand_landmarker.task'],
 ].map(([rel, dest]) => ({ url: `${MP}/${rel}`, dest }))
 
 /** OpenCV Zoo 走 GitHub raw，URL 形态不同，单独追加 */
@@ -49,6 +58,31 @@ MODELS.push({
   url: `${ZOO}/face_recognition_sface/face_recognition_sface_2021dec.onnx`,
   dest: 'models/onnx/face_recognition_sface_2021dec.onnx',
 })
+
+/**
+ * 掌纹骨干。两个都是 Apache-2.0 的通用视觉骨干（**不是**掌纹专用模型，
+ * 见 src/palm/backbone.ts 的说明），走 HuggingFace 的 onnx-community 镜像。
+ */
+MODELS.push({
+  url: `${HF}/onnx-community/dinov2-small-ONNX/resolve/main/onnx/model_fp16.onnx`,
+  dest: 'models/onnx/palm_dinov2_small_fp16.onnx',
+})
+
+/**
+ * MobileNetV3 不能直接用：官方导出只有 `logits`（1000 维 ImageNet 分类分数）这一个输出，
+ * 拿分类分数当特征向量是很差的选择。所以先下原始图，再用 scripts/patch-onnx-output.py
+ * 把分类头摘掉、改成暴露分类前的 1024 维池化特征。
+ *
+ * `expectBytes` 是打完补丁后的字节数，用来做幂等判断——补丁脚本是确定性的
+ * （只删节点/权重、加一条输出声明，不做任何量化），同样的输入必然得到同样的输出。
+ */
+const PATCHED_MOBILENET = {
+  srcUrl: `${HF}/onnx-community/mobilenetv3_small_100.lamb_in1k/resolve/main/onnx/model.onnx`,
+  /** 原始图下载到这里，打完补丁就删 */
+  raw: path.join(SCRATCH_DIR, 'mobilenetv3_small_100.lamb_in1k.onnx'),
+  dest: 'models/onnx/palm_mobilenetv3_features.onnx',
+  expectBytes: 6104239,
+}
 
 /** 从 node_modules 拷贝的 WASM 运行时： [源目录, 目标目录, 文件名谓词] */
 const WASM_COPIES = [
@@ -117,8 +151,53 @@ async function download(url, dest) {
   return { skipped: false, size }
 }
 
-async function copyWasm() {
-  let total = 0
+/** 跑一次 python 补丁脚本；非零退出即抛错 */
+function runPatch(src, dst) {
+  return new Promise((resolve, reject) => {
+    const py = process.env.PYTHON ?? 'python3'
+    const script = path.join(ROOT, 'scripts', 'patch-onnx-output.py')
+    const child = spawn(py, [script, src, dst], { stdio: 'inherit' })
+    child.on('error', (err) =>
+      reject(new Error(`调用 ${py} 失败（${err.message}）。补丁需要 onnx 包：pip install onnx`)),
+    )
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`补丁脚本退出码 ${code}`)),
+    )
+  })
+}
+
+/**
+ * 下载 MobileNetV3 原始图 -> 打补丁 -> 落盘成「带 1024 维特征输出」的版本。
+ * 目标文件已经是打过补丁的（字节数对得上）就整个跳过，连原始图都不下。
+ */
+async function fetchPatchedMobilenet() {
+  const { srcUrl, raw, dest, expectBytes } = PATCHED_MOBILENET
+  const destPath = path.join(PUBLIC_DIR, dest)
+
+  if (!FORCE) {
+    const ls = await localSize(destPath)
+    if (ls === expectBytes) {
+      console.log(`  skip   ${rel(destPath)}  (${mb(ls)}，已打过补丁)`)
+      return ls
+    }
+  }
+
+  await download(srcUrl, raw)
+  await mkdir(path.dirname(destPath), { recursive: true })
+  await runPatch(raw, destPath)
+  await unlink(raw).catch(() => {})
+
+  const size = (await localSize(destPath)) ?? 0
+  if (size !== expectBytes) {
+    console.warn(
+      `  ⚠ ${rel(destPath)} 打完补丁是 ${size} 字节，与预期的 ${expectBytes} 不符。` +
+        `模型结构可能变了，请确认 $TAP 层，并同步更新 src/palm/backbone.ts 里的 bytes。`,
+    )
+  }
+  return size
+}
+
+async function copyWasm() {  let total = 0
   for (const { from, to, pick } of WASM_COPIES) {
     const srcDir = path.join(ROOT, 'node_modules', ...from)
     const dstDir = path.join(PUBLIC_DIR, to)
@@ -164,6 +243,9 @@ async function main() {
     const { size } = await download(url, path.join(PUBLIC_DIR, dest))
     modelBytes += size ?? 0
   }
+
+  // MobileNetV3 要过一道补丁，单独走
+  modelBytes += await fetchPatchedMobilenet()
 
   console.log(`\n拷贝 WASM 运行时 -> public/wasm/`)
   const wasmBytes = await copyWasm()

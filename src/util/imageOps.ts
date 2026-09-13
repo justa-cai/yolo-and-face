@@ -91,20 +91,52 @@ export function estimateSimilarity(src: readonly Pt[], dst: readonly (readonly [
   }
 }
 
-let scratch: HTMLCanvasElement | null = null
-let scratchCtx: CanvasRenderingContext2D | null = null
+/** 离屏画布缓存，按边长分开存：人脸走 112、掌纹走 224，两个同时开着就不用反复改画布尺寸 */
+const scratchBySize = new Map<number, CanvasRenderingContext2D>()
 
-function ensureScratch(): CanvasRenderingContext2D {
-  if (!scratchCtx) {
-    scratch = document.createElement('canvas')
-    scratch.width = FACE_SIZE
-    scratch.height = FACE_SIZE
+function ensureScratch(size: number): CanvasRenderingContext2D {
+  let ctx = scratchBySize.get(size)
+  if (!ctx) {
+    const canvas = document.createElement('canvas')
+    canvas.width = size
+    canvas.height = size
     // willReadFrequently：每帧都要 getImageData，不开这个在部分浏览器上会走 GPU 回读，慢很多
-    const ctx = scratch.getContext('2d', { willReadFrequently: true })
-    if (!ctx) throw new Error('无法创建人脸对齐用的离屏画布')
-    scratchCtx = ctx
+    const c = canvas.getContext('2d', { willReadFrequently: true })
+    if (!c) throw new Error('无法创建对齐用的离屏画布')
+    scratchBySize.set(size, c)
+    ctx = c
   }
-  return scratchCtx
+  return ctx
+}
+
+/**
+ * 按已求出的相似变换把源画面重采样到 `size×size` 的正方形里，返回像素数据。
+ *
+ * 对齐后落在正方形之外的部分是透明的（等价于黑色填充），这点与 OpenCV 的
+ * `warpAffine` + 默认 border 一致。人脸的 SFace 与掌纹的骨干都走这一步，
+ * 区别只在拿到像素之后怎么组织成张量。
+ */
+export function warpToSquare(
+  source: CanvasImageSource,
+  t: Similarity,
+  size: number,
+): ImageData | null {
+  const ctx = ensureScratch(size)
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, size, size)
+  // canvas 的变换矩阵是 [m11 m21 dx; m12 m22 dy]，对应 x' = a·x - b·y + tx
+  ctx.setTransform(t.a, t.b, -t.b, t.a, t.tx, t.ty)
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  try {
+    ctx.drawImage(source, 0, 0)
+  } catch {
+    // 视频还没出帧时 drawImage 会抛 InvalidStateError
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    return null
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  return ctx.getImageData(0, 0, size, size)
 }
 
 /**
@@ -141,24 +173,10 @@ export function alignFaceToTensor(
   const t = estimateSimilarity(srcPx, ARCFACE_TEMPLATE_112)
   if (!t) return null
 
-  const ctx = ensureScratch()
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
-  // 清成透明：对齐后落在 112×112 之外的部分取到 0，正与 OpenCV 的黑色填充等价
-  ctx.clearRect(0, 0, FACE_SIZE, FACE_SIZE)
-  // canvas 的变换矩阵是 [m11 m21 dx; m12 m22 dy]，对应 x' = a·x - b·y + tx
-  ctx.setTransform(t.a, t.b, -t.b, t.a, t.tx, t.ty)
-  ctx.imageSmoothingEnabled = true
-  ctx.imageSmoothingQuality = 'high'
-  try {
-    ctx.drawImage(source, 0, 0)
-  } catch {
-    // 视频还没出帧时 drawImage 会抛 InvalidStateError
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-    return null
-  }
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  const img = warpToSquare(source, t, FACE_SIZE)
+  if (!img) return null
 
-  const { data } = ctx.getImageData(0, 0, FACE_SIZE, FACE_SIZE)
+  const { data } = img
   const plane = FACE_SIZE * FACE_SIZE
   const tensor = new Float32Array(3 * plane)
   for (let i = 0, p = 0; i < plane; i++, p += 4) {

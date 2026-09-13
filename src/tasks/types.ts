@@ -85,9 +85,33 @@ export interface VisionTask {
    */
   readonly dependsOn?: readonly string[]
 
+  /**
+   * 改了这些选项就得**重建推理会话**（不是简单赋值）。掌纹任务是可切换骨干的：
+   * 换骨干等于换模型，旧 session 喂进去就是错的。
+   * UI 在 setOption 之后会 dispose + init 一遍。
+   */
+  readonly reinitOn?: readonly string[]
+
   init(report: (text: string, fraction: number) => void): Promise<void>
   setOption(key: string, value: TaskOptionValue): void
   infer(ctx: FrameCtx): Promise<void> | void
   draw(overlay: Overlay): void
   dispose(): void
+}
+
+/**
+ * 靠「抽特征 + 余弦比对」做 1:N 识别的任务（人脸、掌纹）共有的部分。
+ * 侧栏的注册/删除/清空流程对两者完全一致，UI 统一按这个接口写，避免抄两遍。
+ */
+export interface BiometricTask extends VisionTask {
+  /** 最近一帧里第一个目标的特征向量，供「注册当前」用；画面里没有目标时为 null */
+  captureEmbedding(): Float32Array | null
+  /** 特征库被改动后重新读一遍，让下一帧用上新数据 */
+  reloadGallery(): Promise<void>
+  /** 当前推理后端的展示名，例如 "ONNX WASM" */
+  readonly backendLabel: string
+  /** 当前特征骨干的展示名 */
+  readonly backboneLabel: string
+  /** 特征库里有数据当前模型用不了时的警告，没有则 null（侧栏会把它显示出来） */
+  readonly galleryWarning: string | null
 }

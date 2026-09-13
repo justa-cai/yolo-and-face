@@ -3,20 +3,20 @@ import { createOrtSession, loadOrt } from '../runtime/ort'
 import type { Overlay } from '../render/Overlay'
 import { alignFaceToTensor, FACE_SIZE } from '../util/imageOps'
 import {
-  DEFAULT_THRESHOLD,
+  FACE_THRESHOLD,
   l2Normalize,
-  matchFace,
-  type FaceEntry,
-  type FaceMatch,
-} from '../face/match'
-import { FaceGallery } from '../face/FaceGallery'
+  matchEmbedding,
+  type EmbeddingEntry,
+  type EmbeddingMatch,
+} from '../biometric/match'
+import type { EmbeddingGallery } from '../biometric/gallery'
 import {
   fivePointLandmarks,
   landmarkBox,
   SHARED_FACE_BOXES,
   SHARED_FACE_LANDMARKS,
 } from './faceLandmark'
-import type { AssetSpec, FrameCtx, TaskOptionSpec, TaskOptionValue, VisionTask } from './types'
+import type { AssetSpec, BiometricTask, FrameCtx, TaskOptionSpec, TaskOptionValue } from './types'
 import type { Pt, Rect } from '../render/Overlay'
 
 const MODEL: AssetSpec = {
@@ -31,7 +31,7 @@ export interface FaceIdentification {
   /** 与人脸库里最像的那条的余弦相似度；库为空时为 null */
   score: number | null
   /** 命中的人脸库条目；未过阈值时为 null */
-  hit: FaceMatch | null
+  hit: EmbeddingMatch | null
   /** 128 维特征，注册人脸时要用 */
   embedding: Float32Array
 }
@@ -43,7 +43,7 @@ export interface FaceIdentification {
  * 直接把整帧缩到 112×112 送进去，姿态稍微一变特征就飘了，同一个人会被判成不同人。
  * 所以这个任务依赖 face-landmark 一起开启（`dependsOn`），UI 会自动带上它。
  */
-export class FaceRecognizeTask implements VisionTask {
+export class FaceRecognizeTask implements BiometricTask {
   readonly id = 'face-recognize'
   readonly name = '人脸识别 1:N'
   readonly stage = 'classify' as const
@@ -65,7 +65,7 @@ export class FaceRecognizeTask implements VisionTask {
       min: 0.1,
       max: 0.8,
       step: 0.005,
-      default: DEFAULT_THRESHOLD,
+      default: FACE_THRESHOLD,
       format: (v) => v.toFixed(3),
     },
     {
@@ -96,15 +96,15 @@ export class FaceRecognizeTask implements VisionTask {
   private outputName = ''
   private backend = ''
 
-  private readonly gallery: FaceGallery
-  private entries: FaceEntry[] = []
+  private readonly gallery: EmbeddingGallery
+  private entries: EmbeddingEntry[] = []
   private results: FaceIdentification[] = []
 
-  private threshold = DEFAULT_THRESHOLD
+  private threshold = FACE_THRESHOLD
   private topK = 1
   private showUnknown = true
 
-  constructor(gallery: FaceGallery) {
+  constructor(gallery: EmbeddingGallery) {
     this.gallery = gallery
   }
 
@@ -132,6 +132,12 @@ export class FaceRecognizeTask implements VisionTask {
   get backendLabel(): string {
     return this.backend === 'webgpu' ? 'ONNX WebGPU' : 'ONNX WASM'
   }
+
+  /** 人脸这边只有一个骨干（SFace），固定返回它的名字；掌纹那边是可切换的 */
+  readonly backboneLabel = 'SFace'
+
+  /** 人脸库只有一个特征空间，不会出现维度对不上的情况 */
+  readonly galleryWarning = null
 
   /** 最近一帧里第一张脸的特征，供给「注册当前人脸」用 */
   captureEmbedding(): Float32Array | null {
@@ -183,7 +189,7 @@ export class FaceRecognizeTask implements VisionTask {
         continue
       }
 
-      const top = matchFace(feature, this.entries, this.topK)
+      const top = matchEmbedding(feature, this.entries, this.topK)
       const best = top[0] ?? null
       out.push({
         rect: boxes?.[i] ?? landmarkBox(faces[i]),

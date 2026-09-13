@@ -61,6 +61,17 @@
           </div>
 
           <div class="panel-block">
+            <h2>掌纹库 <span class="tag">实验性</span></h2>
+            <div class="face-add">
+              <input id="palm-name" type="text" placeholder="姓名（可留空）" maxlength="24" />
+              <button id="btn-palm-add" type="button" class="mini">注册当前掌纹</button>
+            </div>
+            <div id="palm-note" class="face-note">开启「掌纹识别 1:N」后可注册</div>
+            <div id="palm-list" class="face-list"></div>
+            <button id="btn-palm-clear" type="button" class="ghost" hidden>清空掌纹库</button>
+          </div>
+
+          <div class="panel-block">
             <h2>性能</h2>
             <div id="stats" class="stats"></div>
           </div>

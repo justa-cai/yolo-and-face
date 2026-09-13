@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "fetch-assets": "node scripts/fetch-assets.mjs",
+    "patch-onnx": "python3 scripts/patch-onnx-output.py",
     "deploy:pages": "node scripts/deploy-pages.mjs",
     "serve:dist": "python3 -m http.server 8899 --directory dist"
   },
