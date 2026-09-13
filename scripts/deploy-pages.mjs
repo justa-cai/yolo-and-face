@@ -13,19 +13,28 @@
  * COOP/COEP 配上，那才是性能最好的一档。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const dryRun = process.argv.includes('--dry-run')
 
+/** 跑子进程。opts.cwd 相对 root，这里统一转成绝对路径。 */
 function run(cmd, args, opts = {}) {
-  return execFileSync(cmd, args, { cwd: root, stdio: 'inherit', ...opts })
+  const { cwd, ...rest } = opts
+  return execFileSync(cmd, args, {
+    cwd: cwd ? resolve(root, cwd) : root,
+    stdio: 'inherit',
+    ...rest,
+  })
 }
 
-function git(args, opts) {
-  return execFileSync('git', args, { cwd: root, encoding: 'utf8', ...opts }).trim()
+function git(args, opts = {}) {
+  return execFileSync('git', args, {
+    cwd: opts.cwd ? resolve(root, opts.cwd) : root,
+    encoding: 'utf8',
+  }).trim()
 }
 
 // 1) 构建。build 里已经带了 tsc --noEmit，类型不过就不出产物。
@@ -54,48 +63,33 @@ if (!git(['remote']).split('\n').filter(Boolean).length) {
   process.exit(1)
 }
 
-// 3) 用 worktree 把 gh-pages 分支挂起来，把 dist 内容倒进去再提交。
-//    用 worktree 而不是切分支，是为了不动当前工作区（构建产物和源码都可能还在改）。
-const WT = '.deploy-gh-pages'
-rmSync(resolve(root, WT), { recursive: true, force: true })
+// 3) 把 dist 倒进一个一次性仓库，再强推成 origin/gh-pages。
+//
+//    刻意不用 `git worktree add --orphan`：那需要 Git 2.42+，而本机是 2.34，
+//    直接报 unknown option。这里改成「新建一个临时仓库 -> 提交 -> 强推」，
+//    对 Git 版本没有要求，也不动当前工作区。
+//
+//    每次都强推（单提交历史）而不是追加：产物每次几乎全变，追加会让 gh-pages
+//    的分支历史无限膨胀，强推让它稳定在 117MB 左右。
+const WT = resolve(root, 'tmp/deploy-gh-pages')
+rmSync(WT, { recursive: true, force: true })
+mkdirSync(WT, { recursive: true })
 
-const hasBranch = (() => {
-  try {
-    git(['rev-parse', '--verify', '--quiet', `refs/heads/gh-pages`])
-    return true
-  } catch {
-    return false
-  }
-})()
-
-if (hasBranch) {
-  run('git', ['worktree', 'add', WT, 'gh-pages'])
-} else {
-  run('git', ['worktree', 'add', '--orphan', '-b', 'gh-pages', WT])
-}
+const remoteUrl = git(['remote', 'get-url', 'origin'])
 
 try {
-  rmSync(resolve(root, WT), { recursive: true, force: true })
+  run('git', ['init', '-b', 'gh-pages'], { cwd: WT })
+  run('git', ['remote', 'add', 'origin', remoteUrl], { cwd: WT })
+
+  // dist 里没有 .git，直接倒进来不会碰到上面刚建好的仓库
   run('cp', ['-r', 'dist/.', `${WT}/`])
   // .nojekyll：不然 Pages 会拿 Jekyll 处理一遍，带下划线的目录会被吃掉
   run('touch', [`${WT}/.nojekyll`])
 
-  const staged = execFileSync('git', ['status', '--porcelain'], {
-    cwd: resolve(root, WT),
-    encoding: 'utf8',
-  }).trim()
-  if (!staged) {
-    console.log('✓ 产物没有变化，无需发布')
-  } else {
-    run('git', ['add', '-A'], { cwd: resolve(root, WT) })
-    run('git', ['commit', '-m', `deploy: ${new Date().toISOString()}`], { cwd: resolve(root, WT) })
-    run('git', ['push', 'origin', 'gh-pages'], { cwd: resolve(root, WT) })
-    console.log('✓ 已推送到 origin/gh-pages')
-  }
+  run('git', ['add', '-A'], { cwd: WT })
+  run('git', ['commit', '-q', '-m', `deploy: ${new Date().toISOString()}`], { cwd: WT })
+  run('git', ['push', '--force', 'origin', 'gh-pages'], { cwd: WT })
+  console.log('✓ 已强推到 origin/gh-pages')
 } finally {
-  try {
-    run('git', ['worktree', 'remove', '--force', WT])
-  } catch {
-    rmSync(resolve(root, WT), { recursive: true, force: true })
-  }
+  rmSync(WT, { recursive: true, force: true })
 }
